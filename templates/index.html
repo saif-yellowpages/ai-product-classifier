@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>FYIND Product Classifier</title>
+<link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <div class="wrap">
+    <h1>FYIND Product Classifier</h1>
+    <p class="subtitle">Select a supplier, upload their product catalog, and get an FYIND upload-ready file.</p>
+
+    <div id="mock-banner" class="banner" style="display:none;">
+      ⚠️ Running in <strong>mock mode</strong> — using sample suppliers/attributes, not live FYIND data.
+      Set <code>FYIND_API_KEY</code> and real API URLs in your environment to go live.
+    </div>
+
+    <form id="classify-form">
+      <label for="supplier">1. Supplier</label>
+      <select id="supplier" name="supplier_id" required>
+        <option value="">Loading suppliers…</option>
+      </select>
+
+      <label for="file">2. Product Catalog (PDF, Word, image, Excel)</label>
+      <input type="file" id="file" name="file" accept=".pdf,.docx,.doc,.png,.jpg,.jpeg,.webp,.xlsx,.csv" required />
+
+      <button type="submit" id="submit-btn">Classify Products</button>
+    </form>
+
+    <div id="status" class="status"></div>
+    <div id="result" class="result" style="display:none;">
+      <h3>✅ Done</h3>
+      <p id="result-summary"></p>
+      <a id="download-link" class="download-btn" href="#" download>Download Excel</a>
+    </div>
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

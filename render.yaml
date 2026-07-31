@@ -1,0 +1,20 @@
+services:
+  - type: web
+    name: fyind-product-classifier
+    env: python
+    plan: free
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "uvicorn app.main:app --host 0.0.0.0 --port $PORT"
+    envVars:
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: CLAUDE_MODEL
+        value: claude-sonnet-4-5
+      - key: FYIND_SUPPLIER_API_URL
+        sync: false
+      - key: FYIND_ATTRIBUTE_API_URL
+        sync: false
+      - key: FYIND_API_KEY
+        sync: false
+      - key: USE_MOCK_FYIND
+        value: auto
