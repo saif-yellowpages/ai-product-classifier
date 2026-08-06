@@ -77,11 +77,15 @@ def get_suppliers(force_refresh: bool = False) -> list[dict]:
     page = 1
     page_size = 200
     while True:
+        # Their own admin UI always sends "adminSupplier" as a bare query key
+        # (no value) -- omitting it causes a 404. Build the URL manually to
+        # match that exact shape rather than relying on requests' params dict.
+        url = f"{SUPPLIER_ENDPOINT}?adminSupplier&pageSize={page_size}&pageIndex={page}&status=true"
         resp = requests.get(
-            SUPPLIER_ENDPOINT,
-            params={"pageSize": page_size, "pageIndex": page, "status": "true"},
+            url,
             headers=_headers(),
             timeout=20,
+        )
         )
         resp.raise_for_status()
         rows = resp.json()
