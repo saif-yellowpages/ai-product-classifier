@@ -81,7 +81,18 @@ def _extract_image(filepath: str) -> dict:
 
 
 def _extract_tabular(filepath: str) -> dict:
-    import pandas as pd
+    import csv
     ext = Path(filepath).suffix.lower()
-    df = pd.read_csv(filepath) if ext == ".csv" else pd.read_excel(filepath)
-    return {"text": df.to_csv(index=False), "images": []}
+    rows = []
+    if ext == ".csv":
+        with open(filepath, newline="", encoding="utf-8", errors="ignore") as f:
+            rows = list(csv.reader(f))
+    else:
+        from openpyxl import load_workbook
+        wb = load_workbook(filepath, read_only=True, data_only=True)
+        ws = wb.active
+        for row in ws.iter_rows(values_only=True):
+            rows.append(["" if c is None else str(c) for c in row])
+        wb.close()
+    text = "\n".join(",".join(r) for r in rows)
+    return {"text": text, "images": []}
