@@ -32,8 +32,10 @@ def use_mock() -> bool:
 MAX_UPLOAD_MB = int(os.getenv("MAX_UPLOAD_MB", "20"))
 ALLOWED_EXTENSIONS = {".pdf", ".docx", ".doc", ".png", ".jpg", ".jpeg", ".webp", ".xlsx", ".csv"}
 
-# Max attribute columns in the upload template (Attribute 1..6)
-MAX_ATTRIBUTES = int(os.getenv("MAX_ATTRIBUTES", "6"))
+# Max attributes per product Claude will extract. No longer tied to a fixed
+# number of Excel columns (those are now dynamic, named per attribute) --
+# this is just a sanity cap against runaway extraction on messy catalogs.
+MAX_ATTRIBUTES = int(os.getenv("MAX_ATTRIBUTES", "10"))
 
 # Confidence threshold (%) at/above which Review = "Confident", below = "Needs review"
 CONFIDENCE_THRESHOLD = int(os.getenv("CONFIDENCE_THRESHOLD", "85"))
