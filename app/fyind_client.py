@@ -47,6 +47,15 @@ COMMON_HEADERS = {
 CACHE_TTL_SECONDS = 15 * 60  # 15 minutes
 _cache = {"suppliers": None, "suppliers_at": 0}
 
+# Hard caps to prevent the prompt sent to Claude from exploding. Some FYIND
+# rows have severely malformed `attributeSetValues` strings that parse into
+# hundreds of spurious "attribute names" -- and broad category keywords
+# (e.g. "pipe", "steel") can legitimately match hundreds of real products.
+# Without these caps, a single classify request hit 1.25M tokens (limit is
+# 200K) purely from the attribute library JSON, before any catalog content.
+MAX_ATTRIBUTE_NAMES_PER_PRODUCT = 12
+MAX_LIBRARY_ENTRIES = 300  # total, across ALL keywords combined
+
 # Per-keyword search result cache, so repeated uploads with similar catalogs
 # (e.g. your team testing the same supplier a few times) don't re-hit FYIND
 # every single time. Small in-memory dict: {keyword_lowercase: (result_dict, timestamp)}
@@ -124,7 +133,7 @@ def get_suppliers(force_refresh: bool = False) -> list[dict]:
 # ATTRIBUTE SETS -- targeted search (the memory-safe path, used by default)
 # ---------------------------------------------------------------------------
 
-def search_attribute_sets(keywords: list[str], page_size: int = 100, max_pages_per_keyword: int = 5) -> dict:
+def search_attribute_sets(keywords: list[str], page_size: int = 50, max_pages_per_keyword: int = 2) -> dict:
     """
     Fetches only attribute sets matching the given keywords (via FYIND's
     `attributeSetName` search param), merges results, and returns a SLIM
@@ -133,8 +142,13 @@ def search_attribute_sets(keywords: list[str], page_size: int = 100, max_pages_p
     Attribute VALUES are discarded -- only names are kept. This is the
     memory-safe replacement for get_attribute_library().
 
-    max_pages_per_keyword caps how far we paginate a single keyword's
-    results, as a safety net against an unexpectedly broad match.
+    Two safety nets against the prompt exploding (this hit 1.25M tokens
+    once against Claude's 200K limit, before these caps existed):
+      - max_pages_per_keyword caps how far we paginate a single keyword's
+        results (default 2 pages x 50 = 100 rows per keyword max).
+      - MAX_LIBRARY_ENTRIES caps the TOTAL merged size across all keywords
+        combined -- stops pulling more once the cap is hit, regardless of
+        how many keywords are left to search.
     """
     if config.use_mock():
         # In mock mode, just return whatever mock entries loosely match, or
@@ -147,6 +161,9 @@ def search_attribute_sets(keywords: list[str], page_size: int = 100, max_pages_p
 
     merged = {}
     for keyword in keywords:
+        if len(merged) >= MAX_LIBRARY_ENTRIES:
+            break  # hard stop -- already have enough, don't keep fetching
+
         kw_key = keyword.strip().lower()
         if not kw_key:
             continue
@@ -190,6 +207,10 @@ def search_attribute_sets(keywords: list[str], page_size: int = 100, max_pages_p
         _search_cache[kw_key] = (kw_results, now)
         merged.update(kw_results)
 
+    # Final hard trim in case the last keyword's batch pushed us over.
+    if len(merged) > MAX_LIBRARY_ENTRIES:
+        merged = dict(list(merged.items())[:MAX_LIBRARY_ENTRIES])
+
     return merged
 
 
@@ -199,12 +220,16 @@ def _parse_attribute_names(raw) -> list[str]:
     {attrName: [values...] or value}. We only need the KEY NAMES -- values
     are discarded immediately, which is what keeps this memory-light even
     for the rows with huge/messy value strings.
+
+    Capped at MAX_ATTRIBUTE_NAMES_PER_PRODUCT -- some rows have severely
+    malformed data that parses into hundreds of spurious "names"; capping
+    here is what actually stops those rows from blowing up prompt size.
     """
     if not raw:
         return []
     try:
         data = json.loads(raw)
-        return list(data.keys())
+        return list(data.keys())[:MAX_ATTRIBUTE_NAMES_PER_PRODUCT]
     except (json.JSONDecodeError, TypeError):
         return _parse_legacy_packed_string_keys(raw)
 
@@ -215,12 +240,17 @@ def _parse_legacy_packed_string_keys(s: str) -> list[str]:
         return []
     # Old packed format: "Attr1:val1, val2, Attr2:val1, ..." -- extract just
     # the attribute name tokens, never build the value lists at all.
+    # Some rows (e.g. a "Flicker Machine Blade" row seen in testing) have
+    # severely malformed data that matches hundreds of spurious "names" --
+    # cap and bail out early rather than scanning/storing all of them.
     names = re.findall(r'(?:^|,\s*)([A-Za-z][A-Za-z0-9 /\.\-_]{0,30}?):', s)
     seen = []
     for n in names:
         n = n.strip()
         if n and n not in seen:
             seen.append(n)
+        if len(seen) >= MAX_ATTRIBUTE_NAMES_PER_PRODUCT:
+            break
     return seen
 
 
