@@ -37,3 +37,7 @@ MAX_ATTRIBUTES = int(os.getenv("MAX_ATTRIBUTES", "6"))
 
 # Confidence threshold (%) at/above which Review = "Confident", below = "Needs review"
 CONFIDENCE_THRESHOLD = int(os.getenv("CONFIDENCE_THRESHOLD", "85"))
+
+# Max PDF pages processed per catalog -- caps both memory use and API cost
+# on very large documents.
+MAX_PDF_PAGES = int(os.getenv("MAX_PDF_PAGES", "40"))
