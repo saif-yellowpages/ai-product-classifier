@@ -83,3 +83,13 @@ async def download(path: str):
 @app.get("/api/health")
 async def health():
     return {"status": "ok", "mock_mode": config.use_mock()}
+
+@app.get("/api/debug/attributes")
+async def debug_attributes():
+    import sys
+    library = fyind_client.get_attribute_library()
+    size_bytes = sys.getsizeof(str(library))
+    return {
+        "product_count": len(library),
+        "approx_size_mb": round(size_bytes / (1024 * 1024), 2),
+    }
