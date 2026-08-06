@@ -2,6 +2,11 @@
 Turns an uploaded supplier catalog (PDF / DOCX / image) into content Claude
 can read: either extracted text, or base64 images for pages that are mostly
 pictures/tables (common in product brochures).
+
+PDFs use iter_pdf_pages(): a generator that yields ONE page at a time
+(render -> caller uses it -> caller discards it -> next page). This keeps
+at most one rendered page image in memory at a time, regardless of how many
+pages the catalog has -- important on small-memory hosting tiers.
 """
 import base64
 import io
@@ -11,57 +16,59 @@ import fitz  # PyMuPDF
 from docx import Document
 from PIL import Image
 
-MAX_PAGES_AS_IMAGES = 10  # safety cap so we don't blow up memory on free-tier hosting
+from app import config
+
+PDF_RENDER_DPI = 72  # low DPI keeps each page image small; catalogs stay readable
 
 
 def extract_content(filepath: str) -> dict:
     """
     Returns {"text": str, "images": [base64_png, ...]}
-    Both may be populated; the classifier will send whichever is non-empty.
+    Used for non-PDF files (DOCX/image/Excel/CSV -- all small enough to
+    process in one shot). For PDFs, use iter_pdf_pages() instead.
     """
     ext = Path(filepath).suffix.lower()
 
-    if ext == ".pdf":
-        return _extract_pdf(filepath)
-    elif ext in (".docx", ".doc"):
+    if ext in (".docx", ".doc"):
         return _extract_docx(filepath)
     elif ext in (".png", ".jpg", ".jpeg", ".webp"):
         return _extract_image(filepath)
     elif ext in (".xlsx", ".csv"):
         return _extract_tabular(filepath)
     else:
-        raise ValueError(f"Unsupported file type: {ext}")
+        raise ValueError(f"Unsupported file type for extract_content: {ext} (use iter_pdf_pages for PDFs)")
 
 
-def _extract_pdf(filepath: str) -> dict:
+def iter_pdf_pages(filepath: str):
+    """
+    Generator: yields (page_number, text, image_b64_or_None) one page at a
+    time. Only one rendered page image exists in memory at any point.
+
+    image_b64 is None for pages with enough extractable text that a
+    rendered image isn't needed.
+
+    If you break out of iterating early, call the generator's .close()
+    method (or use it in a try/finally) so the underlying PDF file handle
+    gets released via the `finally` block below.
+    """
     doc = fitz.open(filepath)
-    text_parts = []
-    images_b64 = []
+    try:
+        total_pages = min(len(doc), config.MAX_PDF_PAGES)
+        for i in range(total_pages):
+            page = doc[i]
+            text = page.get_text()
+            image_b64 = None
 
-    for i, page in enumerate(doc):
-        text = page.get_text()
-        text_parts.append(text)
+            if len(text.strip()) < 40:
+                pix = page.get_pixmap(dpi=PDF_RENDER_DPI)
+                img_bytes = pix.tobytes("png")
+                image_b64 = base64.b64encode(img_bytes).decode()
+                pix = None
+                img_bytes = None
 
-        # If a page has very little extractable text, it's likely image-heavy
-        # (common for glossy product brochures) -- render it as an image too
-        # so Claude's vision can read tables/photos/captions.
-        if len(text.strip()) < 40 and len(images_b64) < MAX_PAGES_AS_IMAGES:
-            pix = page.get_pixmap(dpi=72)  # low DPI keeps memory usage small on free-tier hosting
-            img_bytes = pix.tobytes("png")
-            images_b64.append(base64.b64encode(img_bytes).decode())
-            pix = None  # release reference promptly
-
-    # Always also render first N pages as images for brochures with logos/
-    # tables that render poorly as plain text.
-    if len(images_b64) == 0 and len(doc) <= MAX_PAGES_AS_IMAGES:
-        for page in doc:
-            pix = page.get_pixmap(dpi=72)
-            img_bytes = pix.tobytes("png")
-            images_b64.append(base64.b64encode(img_bytes).decode())
-            pix = None
-
-    doc.close()  # explicitly free the PDF from memory
-    return {"text": "\n\n".join(text_parts), "images": images_b64}
+            yield i, text, image_b64
+    finally:
+        doc.close()
 
 
 def _extract_docx(filepath: str) -> dict:
