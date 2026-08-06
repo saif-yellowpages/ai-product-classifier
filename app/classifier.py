@@ -115,15 +115,9 @@ def classify_catalog(extracted_content: dict, attribute_library: dict) -> list[d
 
     Returns a list of product dicts (see SYSTEM_PROMPT shape above).
     """
-    # Trim the library sent to Claude to just names + attribute keys (not
-    # every allowed value, which can be huge) to keep the prompt lean.
-    slim_library = {
-        pname: {
-            "attribute_set_name": info["attribute_set_name"],
-            "attribute_names": list(info["attributes"].keys()),
-        }
-        for pname, info in attribute_library.items()
-    }
+    # attribute_library is already slim (attribute_names only, no values) --
+    # see fyind_client.search_attribute_sets(). Just pass it through as-is.
+    slim_library = attribute_library
 
     content_blocks = []
     if extracted_content.get("text"):
@@ -173,3 +167,83 @@ def classify_catalog(extracted_content: dict, attribute_library: dict) -> list[d
         except (TypeError, ValueError):
             p["confidence"] = 0
     return products
+
+
+CATEGORY_GUESS_PROMPT = """You are looking at content from a supplier's \
+product catalog. Your ONLY job right now is to guess likely product \
+CATEGORY keywords that could be used to search a database of product \
+types -- NOT to identify specific products yet.
+
+Look at the catalog content and list 5-12 short, general keywords that \
+describe the KINDS of products in it (e.g. "pipe", "valve", "steel", \
+"pvc", "gasket", "coupling", "fitting", "hose") -- broad category/material \
+words, not specific product names or brand names.
+
+Respond with ONLY a JSON object (no markdown fences, no preamble):
+{"keywords": ["keyword1", "keyword2", ...]}
+"""
+
+
+def guess_categories(content: dict) -> list[str]:
+    """
+    Quick, cheap pass: given catalog content (text and/or a couple of
+    images), asks Claude for broad category keywords -- used to fetch only
+    a relevant slice of FYIND's attribute library via search_attribute_sets()
+    instead of loading all ~9,000 product names into memory.
+    """
+    content_blocks = []
+    if content.get("text"):
+        content_blocks.append({"type": "text", "text": f"CATALOG CONTENT:\n{content['text'][:20000]}"})
+    for img_b64 in content.get("images", [])[:5]:  # a few pages is plenty for a category guess
+        content_blocks.append({
+            "type": "image",
+            "source": {"type": "base64", "media_type": "image/png", "data": img_b64},
+        })
+    if not content_blocks:
+        return []
+    content_blocks.append({"type": "text", "text": "List category keywords now."})
+
+    response = _get_client().messages.create(
+        model=config.CLAUDE_MODEL,
+        max_tokens=500,
+        system=CATEGORY_GUESS_PROMPT,
+        messages=[{"role": "user", "content": content_blocks}],
+    )
+    raw = "".join(b.text for b in response.content if b.type == "text")
+    raw = raw.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()
+    try:
+        parsed = json.loads(raw)
+        return [k for k in parsed.get("keywords", []) if isinstance(k, str) and k.strip()]
+    except json.JSONDecodeError:
+        return []
+
+
+def classify_catalog_streaming(filepath: str, attribute_library: dict) -> list[dict]:
+    """
+    PDF-specific: classifies one page at a time (via extraction.iter_pdf_pages)
+    instead of loading every page image into memory before calling Claude
+    once. Trades a bit more total API cost/time (one Claude call per page
+    instead of one call for the whole document) for a much smaller memory
+    footprint -- only one rendered page image exists at a time.
+
+    Pages with no meaningful content (no text, no image needed) are skipped
+    to avoid wasting an API call on a blank/divider page.
+    """
+    from app import extraction  # local import avoids a circular import at module load time
+
+    all_products = []
+    for page_num, text, image_b64 in extraction.iter_pdf_pages(filepath):
+        if not text.strip() and not image_b64:
+            continue  # skip empty/blank pages -- no point calling Claude on nothing
+
+        page_content = {"text": text, "images": [image_b64] if image_b64 else []}
+        try:
+            page_products = classify_catalog(page_content, attribute_library)
+        except ValueError:
+            # If Claude's response for this one page fails to parse, don't
+            # let it kill the whole document -- skip this page and continue.
+            continue
+
+        all_products.extend(page_products)
+
+    return all_products
