@@ -116,8 +116,20 @@ def classify_catalog(extracted_content: dict, attribute_library: dict) -> list[d
     Returns a list of product dicts (see SYSTEM_PROMPT shape above).
     """
     # attribute_library is already slim (attribute_names only, no values) --
-    # see fyind_client.search_attribute_sets(). Just pass it through as-is.
+    # see fyind_client.search_attribute_sets(). Just pass it through as-is,
+    # EXCEPT: defensive final backstop. fyind_client.py already caps this at
+    # the source, but this is cheap insurance against any future change (or
+    # config value) letting it through too large again -- we hit 1.25M
+    # tokens once (Claude's limit is 200K) before the source-side caps
+    # existed, purely from an oversized library JSON.
     slim_library = attribute_library
+    MAX_LIBRARY_JSON_CHARS = 150_000  # ~35-40K tokens, leaves room for catalog content
+    library_json = json.dumps(slim_library)
+    if len(library_json) > MAX_LIBRARY_JSON_CHARS:
+        trimmed = dict(list(slim_library.items())[: len(slim_library) // 2])
+        while len(json.dumps(trimmed)) > MAX_LIBRARY_JSON_CHARS and len(trimmed) > 10:
+            trimmed = dict(list(trimmed.items())[: len(trimmed) // 2])
+        slim_library = trimmed
 
     content_blocks = []
     if extracted_content.get("text"):
@@ -174,7 +186,7 @@ product catalog. Your ONLY job right now is to guess likely product \
 CATEGORY keywords that could be used to search a database of product \
 types -- NOT to identify specific products yet.
 
-Look at the catalog content and list 5-12 short, general keywords that \
+Look at the catalog content and list 4-8 short, general keywords that \
 describe the KINDS of products in it (e.g. "pipe", "valve", "steel", \
 "pvc", "gasket", "coupling", "fitting", "hose") -- broad category/material \
 words, not specific product names or brand names.
