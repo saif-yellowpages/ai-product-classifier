@@ -11,7 +11,7 @@ import fitz  # PyMuPDF
 from docx import Document
 from PIL import Image
 
-MAX_PAGES_AS_IMAGES = 30  # safety cap so we don't blow up the API call
+MAX_PAGES_AS_IMAGES = 10  # safety cap so we don't blow up memory on free-tier hosting
 
 
 def extract_content(filepath: str) -> dict:
@@ -45,20 +45,22 @@ def _extract_pdf(filepath: str) -> dict:
         # If a page has very little extractable text, it's likely image-heavy
         # (common for glossy product brochures) -- render it as an image too
         # so Claude's vision can read tables/photos/captions.
-        if len(text.strip()) < 40 and i < MAX_PAGES_AS_IMAGES:
-            pix = page.get_pixmap(dpi=150)
+        if len(text.strip()) < 40 and len(images_b64) < MAX_PAGES_AS_IMAGES:
+            pix = page.get_pixmap(dpi=72)  # low DPI keeps memory usage small on free-tier hosting
             img_bytes = pix.tobytes("png")
             images_b64.append(base64.b64encode(img_bytes).decode())
+            pix = None  # release reference promptly
 
     # Always also render first N pages as images for brochures with logos/
-    # tables that render poorly as plain text (matches what we saw with the
-    # Deep Sea brochure earlier: tables with Size/Material/Grade rows).
+    # tables that render poorly as plain text.
     if len(images_b64) == 0 and len(doc) <= MAX_PAGES_AS_IMAGES:
         for page in doc:
-            pix = page.get_pixmap(dpi=150)
+            pix = page.get_pixmap(dpi=72)
             img_bytes = pix.tobytes("png")
             images_b64.append(base64.b64encode(img_bytes).decode())
+            pix = None
 
+    doc.close()  # explicitly free the PDF from memory
     return {"text": "\n\n".join(text_parts), "images": images_b64}
 
 
